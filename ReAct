@@ -1,0 +1,83 @@
+import json
+import yaml, os
+import asyncio
+from typing import Dict, Any
+from huggingface_hub import InferenceClient
+from tools import getCurrentWeather, getLocation
+
+class ReActAgent:
+    def __init__(self, hf_token: str, model_id: str = "mistralai/Mistral-7B-Instruct-v0.2"):
+        self.client = InferenceClient(token=hf_token, model=model_id)
+        self.tools = {
+            'getCurrentWeather': getCurrentWeather,
+            'getLocation': getLocation,
+        }
+        
+        with open('prompts.yaml', 'r') as file:
+            self.base_messages = yaml.safe_load(file)
+    
+    async def run_tool(self, tool_name: str, tool_args: str = None) -> str:
+        if tool_name not in self.tools:
+            return f"Error: Tool {tool_name} not found"
+        try:
+            result = await self.tools[tool_name]()
+            return json.dumps(result)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def execute(self, query: str) -> None:
+        # Format initial prompt
+        prompt = self.base_messages['system_prompt'] + "\n\nUser: " + query + "\nAssistant: "
+        
+        while True:
+            try:
+                response = self.client.text_generation(
+                    prompt,
+                    max_new_tokens=512,  # Adjust based on your needs
+                    temperature=0.6,
+                    repetition_penalty=1.1,
+                    stop_sequences=["\nUser:", "\nHuman:"]  # Stop at next user input
+                )
+                
+                content = response
+                print("\nResponse:", content)  # Debug print
+                
+                if 'Action:' not in content:
+                    print("\nFinal Response:")
+                    print("-" * 80)
+                    print(content)
+                    print("-" * 80)
+                    break
+                
+                thought, action, *_ = content.split('\nAction:')
+                action = action.strip()
+                tool_name, *args = action.split(':')
+                tool_name = tool_name.strip()
+                tool_args = args[0].strip() if args else None
+                
+                print("\nThought:", thought.replace('Thought:', '').strip())
+                print("Action:", f"{tool_name}: {tool_args}")
+                
+                observation = await self.run_tool(tool_name, tool_args)
+                print("Observation:", observation)
+                
+                # Update prompt with the new interaction
+                prompt += content + f"\nObservation: {observation}\nAssistant: "
+
+            except Exception as e:
+                print(f"Error during execution: {str(e)}")
+                break
+
+async def main():
+    # Replace with your Hugging Face token
+    hf_token = os.getenv('HF_API_TOKEN')
+    
+    print("Starting book recommendation agent...")
+    print("-" * 80)
+    
+    # You can specify a different model here
+    agent = ReActAgent(hf_token, model_id="mistralai/Mistral-7B-Instruct-v0.2")
+    await agent.execute("What should I read today??")
+
+if __name__ == "__main__":
+    asyncio.run(main())
